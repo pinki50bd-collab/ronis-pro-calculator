@@ -184,6 +184,16 @@ body{
 .hist-item .h-expr{font-size:13px;color:var(--text-dim);margin-bottom:3px;word-break:break-all}
 .hist-item .h-res{font-size:21px;font-weight:600;word-break:break-all}
 .hist-empty{flex:1;display:grid;place-items:center;color:var(--text-dim);font-size:15px;text-align:center;line-height:1.7;padding:20px}
+/* ─── Scientific fold panel ─── */
+.sci-wrap{
+  display:grid;grid-template-rows:0fr;opacity:0;margin-top:0;
+  transition:grid-template-rows .55s var(--ease-out), opacity .4s var(--ease-out), margin-top .55s var(--ease-out);
+}
+.sci-wrap.open{grid-template-rows:1fr;opacity:1;margin-top:14px}
+.sci-inner{overflow:hidden;min-height:0}
+.sci-pad{display:grid;grid-template-columns:repeat(5,1fr);grid-auto-rows:1fr;gap:9px;padding-top:2px}
+.sci-pad{height:132px}
+.icon-btn.active{background:linear-gradient(135deg,var(--accent-1),var(--accent-2));color:#fff;box-shadow:var(--glow);border-color:transparent}
 .danger-btn{color:#ff5470;font-size:14px;font-weight:600;background:none;border:none;cursor:pointer;
   font-family:var(--font);padding:8px 10px;border-radius:12px;transition:background .25s}
 .danger-btn:active{background:rgba(255,84,112,.12)}
@@ -197,6 +207,7 @@ body{
     <div class="brand"><div class="logo">≡</div><span data-i18n="brand">Roni's PRO</span></div>
     <div class="top-actions">
       <button class="theme-switch" id="themeSwitch" aria-label="theme"><div class="knob"></div></button>
+      <button class="icon-btn" id="sciBtn" aria-label="scientific">ƒx</button>
       <button class="icon-btn" id="histBtn" aria-label="history">🕘</button>
     </div>
   </div>
@@ -204,6 +215,10 @@ body{
   <div class="display" id="display">
     <div class="expr" id="expr"><span class="caret"></span></div>
     <div class="result glowText" id="result">0</div>
+  </div>
+
+  <div class="sci-wrap" id="sciWrap">
+    <div class="sci-inner"><div class="sci-pad" id="sciPad"></div></div>
   </div>
 
   <div class="pad" id="pad"></div>
@@ -228,6 +243,9 @@ body{
   const padEl = document.getElementById('pad');
   const histPanel = document.getElementById('histPanel');
   const histList = document.getElementById('histList');
+  const sciWrap = document.getElementById('sciWrap');
+  const sciPad = document.getElementById('sciPad');
+  const sciBtn = document.getElementById('sciBtn');
 
   let tokens = [];
   let justEvaluated = false;
@@ -255,6 +273,27 @@ body{
     b.dataset.a = k.a;
     if (k.v) b.dataset.v = k.v;
     padEl.appendChild(b);
+  });
+
+  const sciKeys = [
+    {t:'(', a:'paren', v:'('},
+    {t:')', a:'paren', v:')'},
+    {t:'√', c:'fn', a:'fnTok', v:'√'},
+    {t:'x²', a:'sq'},
+    {t:'1⁄x', a:'inv'},
+    {t:'π', a:'const', v:'π'},
+    {t:'e', a:'const', v:'e'},
+    {t:'ln', c:'fn', a:'fnTok', v:'ln'},
+    {t:'log', c:'fn', a:'fnTok', v:'log'},
+    {t:'xʸ', c:'op', a:'op', v:'^'},
+  ];
+  sciKeys.forEach(k => {
+    const b = document.createElement('button');
+    b.className = 'key sci ' + (k.c || '');
+    b.textContent = k.t;
+    b.dataset.a = k.a;
+    if (k.v) b.dataset.v = k.v;
+    sciPad.appendChild(b);
   });
 
   function buzz(ms = 12){ if (navigator.vibrate) navigator.vibrate(ms); }
@@ -285,29 +324,57 @@ body{
     return s;
   }
 
+  function isFn(t){ return t === '√' || t === 'ln' || t === 'log'; }
+  function isConst(t){ return t === 'π' || t === 'e'; }
+  function isValue(t){ return t && !isOp(t) && !isFn(t) && t !== '(' && t !== ')'; }
+
   function evaluate(tk){
-    const prec = {'+':1, '−':1, '×':2, '÷':2};
+    const fns = {'√':Math.sqrt, 'ln':Math.log, 'log':Math.log10};
+    const consts = {'π':Math.PI, 'e':Math.E};
+    const prec = {'+':1, '−':1, '×':2, '÷':2, '^':4};
+    const right = {'^':true};
     const out = [], ops = [];
     for (const t of tk){
-      if (isOp(t)){
-        while (ops.length && prec[ops[ops.length-1]] >= prec[t]) out.push(ops.pop());
+      if (consts[t] !== undefined) out.push(consts[t]);
+      else if (isFn(t)) ops.push(t);
+      else if (t === '(') ops.push(t);
+      else if (t === ')'){
+        while (ops.length && ops[ops.length-1] !== '(') out.push(ops.pop());
+        if (!ops.length) return NaN;
+        ops.pop();
+        if (ops.length && isFn(ops[ops.length-1])) out.push(ops.pop());
+      }
+      else if (prec[t] !== undefined){
+        while (ops.length && ops[ops.length-1] !== '(' &&
+          (isFn(ops[ops.length-1]) || prec[ops[ops.length-1]] > prec[t] ||
+          (prec[ops[ops.length-1]] === prec[t] && !right[t]))) out.push(ops.pop());
         ops.push(t);
-      } else out.push(parseFloat(t.replace('−', '-')));
+      }
+      else out.push(parseFloat(t.replace('−', '-')));
     }
-    while (ops.length) out.push(ops.pop());
+    while (ops.length){
+      const o = ops.pop();
+      if (o === '(') return NaN;
+      out.push(o);
+    }
     const st = [];
     for (const t of out){
-      if (typeof t === 'number') st.push(t);
-      else {
+      if (typeof t === 'number'){ st.push(t); continue; }
+      if (isFn(t)){
+        const a = st.pop();
+        if (a === undefined) return NaN;
+        st.push(fns[t](a));
+      } else {
         const b = st.pop(), a = st.pop();
         if (a === undefined || b === undefined) return NaN;
         if (t === '+') st.push(a + b);
         else if (t === '−') st.push(a - b);
         else if (t === '×') st.push(a * b);
         else if (t === '÷') st.push(b === 0 ? NaN : a / b);
+        else if (t === '^') st.push(Math.pow(a, b));
       }
     }
-    return st.length ? st[0] : NaN;
+    return st.length === 1 ? st[0] : NaN;
   }
 
   function press(key, btn, ev){
@@ -315,7 +382,7 @@ body{
     if (ev){ ripple(btn, ev); }
     const a = key.dataset.a, v = key.dataset.v;
 
-    if (justEvaluated && !['equals','op','percent','sign'].includes(a)){
+    if (justEvaluated && !['equals','op','percent','sign','sq','inv','fnTok','paren'].includes(a)){
       tokens = []; justEvaluated = false;
       resultEl.textContent = '0';
     }
@@ -353,6 +420,44 @@ body{
         express();
         break;
       }
+      case 'paren': {
+        justEvaluated = false;
+        const p = v;
+        if (p === '('){
+          if (!last || isOp(last) || last === '(' || isFn(last)) tokens.push('(');
+        } else {
+          const open = tokens.filter(x => x === '(').length, close = tokens.filter(x => x === ')').length;
+          if (open > close && last && !isOp(last) && last !== '(') tokens.push(')');
+        }
+        express();
+        break;
+      }
+      case 'fnTok': {
+        justEvaluated = false;
+        if (!last || isOp(last) || last === '(') tokens.push(v);
+        express();
+        break;
+      }
+      case 'const': {
+        justEvaluated = false;
+        if (!last || isOp(last) || last === '(') tokens.push(v);
+        express();
+        break;
+      }
+      case 'sq': {
+        justEvaluated = false;
+        if (!last || isOp(last) || last === '(') break;
+        tokens[tokens.length - 1] = fmt(Math.pow(parseFloat(last.replace('−', '-')), 2));
+        express();
+        break;
+      }
+      case 'inv': {
+        justEvaluated = false;
+        if (!last || isOp(last) || last === '(') break;
+        tokens[tokens.length - 1] = fmt(1 / parseFloat(last.replace('−', '-')));
+        express();
+        break;
+      }
       case 'sign': {
         justEvaluated = false;
         if (!last || isOp(last)) {
@@ -366,7 +471,7 @@ body{
       case 'back': {
         justEvaluated = false;
         if (!last) break;
-        if (isOp(last)) { tokens.pop(); }
+        if (isOp(last) || last === '(' || last === ')' || last === 'π' || last === 'e' || isFn(last)) tokens.pop();
         else if (last.length === 1 || (last.length === 2 && last.startsWith('-'))) tokens.pop();
         else tokens[tokens.length - 1] = last.slice(0, -1);
         highlightOp(null);
@@ -384,7 +489,7 @@ body{
       }
       case 'equals': {
         let tk = [...tokens];
-        while (tk.length && isOp(tk[tk.length - 1])) tk.pop();
+        while (tk.length && !isValue(tk[tk.length - 1])) tk.pop();
         if (tk.length < 2) break;
         const val = evaluate(tk);
         const exprStr = tk.join(' ');
@@ -437,6 +542,17 @@ body{
   padEl.addEventListener('pointerdown', e => {
     const btn = e.target.closest('.key');
     if (btn) press(btn, btn, e);
+  });
+
+  sciPad.addEventListener('pointerdown', e => {
+    const btn = e.target.closest('.key');
+    if (btn) press(btn, btn, e);
+  });
+
+  sciBtn.addEventListener('click', () => {
+    sciWrap.classList.toggle('open');
+    sciBtn.classList.toggle('active');
+    buzz();
   });
 
   document.addEventListener('keydown', e => {
